@@ -1,0 +1,29 @@
+<form class="form-horizontal form-complex">
+<div class="control-group">
+	<label class="control-label" for="execute_flow_studio_flow_id">Studio Flow ID <span class="required">*</span> </label>
+    <div class="controls">
+	<input type="text" name="action.execute_flow.param.studio_flow_id" id="execute_flow_studio_flow_id"/>
+                <span class="help-block"> 
+                    Get this from the URL of your Studio Editor
+                </span>
+    </div>
+</div>
+<div class="control-group">
+	<label class="control-label" for="execute_flow_twilio_api_key_sid">Twilio API KEY SID <span class="required">*</span> </label>
+    <div class="controls">
+	<input type="text" name="action.execute_flow.param.twilio_api_key_sid" id="execute_flow_twilio_api_key_sid"/>
+                <span class="help-block"> 
+                    The SID must exist as a user name in this Add-on's Global Accounts.
+                </span>
+    </div>
+</div>
+<div class="control-group">
+	<label class="control-label" for="execute_flow_search_result_fields">Search Result Fields  </label>
+    <div class="controls">
+	<input type="text" name="action.execute_flow.param.search_result_fields" id="execute_flow_search_result_fields"/>
+                <span class="help-block"> 
+                    Comma-delimited list of fields to send as Twilio Studio Flow parameters
+                </span>
+    </div>
+</div>
+</form>
