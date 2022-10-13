@@ -3,11 +3,8 @@ import json
 
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
+from splunk.clilib import cli_common as cli
 
-#from urllib.parse import urlparse, urlencode
-#from urllib.request import urlopen, Request
-
-# encoding = utf-8
 
 def process_event(helper, *args, **kwargs):
     """
@@ -39,6 +36,9 @@ def process_event(helper, *args, **kwargs):
     search_result_fields = helper.get_param("search_result_fields")
     helper.log_info("search_result_fields={}".format(search_result_fields))
 
+    static_fields_json = helper.get_param("static_fields_json")
+    helper.log_info("static_fields_json={}".format(static_fields_json))
+
 
     # The following example adds two sample events ("hello", "world")
     # and writes them to Splunk
@@ -58,13 +58,25 @@ def process_event(helper, *args, **kwargs):
     helper.log_info("server_uri={}".format(helper.settings["server_uri"]))
     [sample_code_macro:end]
     """
-    helper.set_log_level(helper.log_level)
-    helper.log_debug("Alert action execute_flow started with log_level: {}".format(helper.log_level))
 
     #  Sourcetype for messages presented in ARF views, e.g. in ES notables
     arf_msg_sourcetype="twiliostudio:execution"
 
-    splunk_api_callback_host = helper.get_global_setting("splunk_api_callback_host")
+    helper.set_log_level(helper.log_level)
+    helper.log_debug("Alert action execute_flow started with log_level: {}".format(helper.log_level))
+    
+
+    #  Get the Splunk server name for use in Twilio callbacks
+    alert_actions_config = cli.getMergedConf("alert_actions")
+    alert_actions_hostname = alert_actions_config.get("email", {}).get("hostname", None)
+    if alert_actions_hostname:
+        helper.log_debug("Retrieved alert action hostname from server config: {}".format(alert_actions_hostname))
+
+    if helper.get_global_setting("splunk_api_callback_host"):
+        splunk_api_callback_host = helper.get_global_setting("splunk_api_callback_host")
+    else:
+        splunk_api_callback_host = "{}:8089".format(alert_actions_hostname)
+        
     helper.log_debug("API callback host: {}".format(splunk_api_callback_host))
     
     studio_flow_id = helper.get_param("studio_flow_id")
@@ -74,73 +86,72 @@ def process_event(helper, *args, **kwargs):
     helper.log_debug("twilio_api_key_sid={}".format(twilio_api_key_sid))
     
     twilio_creds = helper.get_user_credential(twilio_api_key_sid)
-
     twilio_client = Client(twilio_creds["username"], twilio_creds["password"])    
-
-
-    """   Old HTTP REQ Way
-    
-    # HTTP prep for Twilio
-    url = "https://studio.twilio.com/v2/Flows/{}/Executions".format(studio_flow_id)
-    
-    auth_header_val = base64.b64encode("{}:{}".format(twilio_creds["username"],twilio_creds["password"]).encode('ascii')).decode('ascii')
-    
-    headers = {}
-    headers["Content-Type"] = "application/x-www-form-urlencoded"
-    headers["Authorization"] = "Basic {}".format(auth_header_val)
-
-    result_field_name = "Parameters"
-    """
 
     mandatory_field_prefix = "@"
     mandatory_field_names  = ["@To","@From"]
-    search_result_fields = helper.get_param("search_result_fields").split(',')
+    
+    search_result_fields = []
+    if helper.get_param("search_result_fields"):
+        search_result_fields = helper.get_param("search_result_fields").split(',')
+    
+    static_vals = {}
+    if helper.get_param("static_fields_json"):
+        try:
+            static_vals = json.loads(helper.get_param("static_fields_json"))
+        except Exception as e:
+            helper.log_error("Error parsing static JSON: {}".format(e))
+            raise e
 
     for search_result in helper.get_events():
 
         body = {}
         flow_parameters = {}
 
-        # Set the Twilio mandatory "envelope" fields
-        for field_name in mandatory_field_names:
-            body_field_name = field_name.lstrip(mandatory_field_prefix)        
-            if search_result.get(field_name):
-                body[body_field_name] = search_result.get(field_name)
-            else:
-                err_msg = "Mandatory field {} not found".format(field_name)
-                raise Exception(err_msg)
-
         ## Add properties to the flow's parameters argument
-        # Server name (in case a callback is needed)
+
+        # Add server name (in case a callback is needed)
         flow_parameters["splunk_api_base"] = splunk_api_callback_host
         
-        # from the search context.  
-        for field_name in ["search_name","sid","rid","server_uri"]:
+        # Add the search context.  
+        for field_name in ["search_name","sid","rid"]:
             # Allow the search result to override the native  (helps with testing, if nothing else....)
             if search_result.get(field_name):
                 flow_parameters[field_name] = search_result.get(field_name)
             else:
                 flow_parameters[field_name] = helper.settings[field_name]
-        
-        # From the action config's list of fields
+
+
+        # Add the search result fields listed in the action config
         for field_name in search_result_fields:
             field_name = field_name.strip()
             if search_result.get(field_name):
                 flow_parameters[field_name] = search_result.get(field_name)
             else:
-                err_msg = "Configured field {} not found".format(field_name)
+                err_msg = "Configured field \"{}\" not found".format(field_name)
+                helper.log_error(err_msg)
                 raise Exception(err_msg)
 
-        """   Old HTTP REQ Way
-        # Put the "data" fields into the <result_field_name> field as a string-ified JSON
-        body[result_field_name] = json.dumps(flow_parameters)
-        
-        encoded_data = urlencode(body).encode("utf-8")
+        # Add the user-specified static fields+values 
+        for k in static_vals.keys():
+            # Will add the body/envelope further down if this is a mandatory param
+            if k not in mandatory_field_names:
+                flow_parameters[k] = static_vals.get(k)
+            
+        helper.log_debug("Parameters to send: {}".format(flow_parameters))
 
-        req = Request(url, encoded_data, headers)
-        urlopen(req).read()
-        """
+        ## Add the Twilio mandatory "envelope" fields
+        for field_name in mandatory_field_names:
+            body_field_name = field_name.lstrip(mandatory_field_prefix)        
+            if static_vals.get(field_name):
+                body[body_field_name] = static_vals.get(field_name)
+            elif search_result.get(field_name):
+                body[body_field_name] = search_result.get(field_name)
+            else:
+                err_msg = "Mandatory field {} not found".format(field_name)
+                raise Exception(err_msg)
 
+        ## Send the request to Twilio
         try:
             execution = twilio_client.studio.v2.flows(studio_flow_id).executions \
                         .create(to=body["To"], \
@@ -155,7 +166,8 @@ def process_event(helper, *args, **kwargs):
                 # Handle duplicate executions gracefully
                 em = "Existing flow active.  No new flow execution created.  See existing execution {}" \
                             .format(tre.details["conflicting_execution_sid"])
-                helper.addevent(sourcetype=arf_msg_sourcetype, event_message=em)
+                helper.log_info(em)
+                helper.addevent(em, sourcetype=arf_msg_sourcetype)
             else:
                 # Try to instrument the others a bit better
                 em = "Unexpected REST exception from Twilio.   See index=cim_modactions for additional details."
@@ -171,3 +183,4 @@ def process_event(helper, *args, **kwargs):
             helper.writeevents(index="summary", host="localhost", source="localhost")
             
     return 0
+
