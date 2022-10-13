@@ -107,6 +107,7 @@ def process_event(helper, *args, **kwargs):
 
         body = {}
         flow_parameters = {}
+        mandatory_fields_found = 0
 
         ## Add properties to the flow's parameters argument
 
@@ -148,8 +149,18 @@ def process_event(helper, *args, **kwargs):
             elif search_result.get(field_name):
                 body[body_field_name] = search_result.get(field_name)
             else:
-                err_msg = "Mandatory field {} not found".format(field_name)
-                raise Exception(err_msg)
+                # Don't raise an exception if the fields were not provided
+                err_msg = "Skipping Twilio flow execution. Mandatory field {} not found in search {} (sid:{} rid:{})".format(field_name,flow_parameters["search_name"],flow_parameters["sid"],flow_parameters["rid"])
+                helper.log_info(err_msg)
+                helper.addevent(err_msg, sourcetype=arf_msg_sourcetype)
+                helper.writeevents(index="summary", host="localhost", source="localhost")
+
+                continue
+            mandatory_fields_found = mandatory_fields_found + 1 
+
+        if len(mandatory_field_names) != mandatory_fields_found:
+            helper.log_debug("mandatory_fields_found: {} of {}".format(mandatory_fields_found,len(mandatory_field_names)))
+            return
 
         ## Send the request to Twilio
         try:
