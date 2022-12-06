@@ -14,11 +14,14 @@ Add Twilio credential in the Add-On's configuration page. Account name can be an
 
 # Troubleshooting 
 
-Error status
-`index=_internal `
+Error status and return code of the script
+
+```index=_internal action=execute_flow ```
 
 More granular messages (especially if you crank up to DEBUG log level)
-`index=cim_modactions  sourcetype="modular_alerts:execute_flow"  action_name=execute_flow`
+
+```index=cim_modactions  sourcetype="modular_alerts:execute_flow"  action_name=execute_flow```
 
 High-level descriptions that appear in ES:
-`index=summary sourcetype = twiliostudio:execution`
+
+```index=summary sourcetype = twiliostudio:execution```
