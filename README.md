@@ -20,7 +20,7 @@ Error status and return code of the script
 
 More granular messages (especially if you crank up to DEBUG log level)
 
-```index=cim_modactions  sourcetype="modular_alerts:execute_flow"  action_name=execute_flow```
+```index=cim_modactions  sourcetype="modular_alerts:execute_flow" ```
 
 High-level descriptions that appear in ES:
 
