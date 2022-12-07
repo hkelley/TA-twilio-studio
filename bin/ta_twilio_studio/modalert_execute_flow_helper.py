@@ -1,4 +1,4 @@
-import base64
+import sys
 import json
 
 from twilio.rest import Client
@@ -103,95 +103,106 @@ def process_event(helper, *args, **kwargs):
             helper.log_error("Error parsing static JSON: {}".format(e))
             raise e
 
+    '''
+        Error-handling approach .....
+        - Don't want to call an "unwrapped" raise within the loop because we don't want to break out and skip search results
+        - Withing the "try" wrapper,  raising an exception should pass a helpful message to the catch block, which will then log to _internal and/or cim_modactions
+        - The catch block will also send the exception's text to index="summary", where it will be visible within ES
+
+        For normal (non-error) processing, set event_msg for each search result.  This will be logged to index="summary" where it will be visible within ES
+    '''
     for search_result in helper.get_events():
 
+        # Define these here so that they are available in both the try and except 
         body = {}
         flow_parameters = {}
-        mandatory_fields_found = 0
+        event_msg = "message stub to be logged in cimaction" 
 
         ## Add properties to the flow's parameters argument
 
         # Add server name (in case a callback is needed)
         flow_parameters["splunk_api_base"] = splunk_api_callback_host
         
-        # Add the search context.  
-        for field_name in ["search_name","sid","rid"]:
-            # Allow the search result to override the native  (helps with testing, if nothing else....)
-            if search_result.get(field_name):
-                flow_parameters[field_name] = search_result.get(field_name)
-            else:
-                flow_parameters[field_name] = helper.settings[field_name]
-
-
-        # Add the search result fields listed in the action config
-        for field_name in search_result_fields:
-            field_name = field_name.strip()
-            if search_result.get(field_name):
-                flow_parameters[field_name] = search_result.get(field_name)
-            else:
-                err_msg = "Configured field \"{}\" not found".format(field_name)
-                helper.log_error(err_msg)
-                raise Exception(err_msg)
-
-        # Add the user-specified static fields+values 
-        for k in static_vals.keys():
-            # Will add the body/envelope further down if this is a mandatory param
-            if k not in mandatory_field_names:
-                flow_parameters[k] = static_vals.get(k)
-            
-        helper.log_debug("Parameters to send: {}".format(flow_parameters))
-
-        ## Add the Twilio mandatory "envelope" fields
-        for field_name in mandatory_field_names:
-            body_field_name = field_name.lstrip(mandatory_field_prefix)        
-            if static_vals.get(field_name):
-                body[body_field_name] = static_vals.get(field_name)
-            elif search_result.get(field_name):
-                body[body_field_name] = search_result.get(field_name)
-            else:
-                # Don't raise an exception if the fields were not provided
-                err_msg = "Skipping Twilio flow execution. Mandatory field {} not found in search {} (sid:{} rid:{})".format(field_name,flow_parameters["search_name"],flow_parameters["sid"],flow_parameters["rid"])
-                helper.log_info(err_msg)
-                helper.addevent(err_msg, sourcetype=arf_msg_sourcetype)
-                helper.writeevents(index="summary", host="localhost", source="localhost")
-
-                continue
-            mandatory_fields_found = mandatory_fields_found + 1 
-
-        if len(mandatory_field_names) != mandatory_fields_found:
-            helper.log_debug("mandatory_fields_found: {} of {}".format(mandatory_fields_found,len(mandatory_field_names)))
-            return
-
-        ## Send the request to Twilio
+        helper.log_debug(vars(search_result))
+        
         try:
+            mandatory_fields_found = 0
+            
+            # Add the search context.  
+            for field_name in ["search_name","sid","rid"]:
+                # Allow the search result to override the native  (helps with testing, if nothing else....)
+                if search_result.get(field_name):
+                    flow_parameters[field_name] = search_result.get(field_name)
+                else:
+                    flow_parameters[field_name] = helper.settings[field_name]
+
+            # Add the search result fields listed in the action config
+            for field_name in search_result_fields:
+                field_name = field_name.strip()
+                if search_result.get(field_name):
+                    flow_parameters[field_name] = search_result.get(field_name)
+                else:
+                    err_msg = "Configured field \"{}\" not found".format(field_name)
+                    helper.log_error(err_msg)
+                    raise Exception(err_msg)
+
+            # Add the user-specified static fields+values 
+            for k in static_vals.keys():
+                # Will add the body/envelope further down if this is a mandatory param
+                if k not in mandatory_field_names:
+                    flow_parameters[k] = static_vals.get(k)
+                
+            helper.log_debug("Parameters to send: {}".format(flow_parameters))
+
+            ## Add the Twilio mandatory "envelope" fields
+            for field_name in mandatory_field_names:
+                body_field_name = field_name.lstrip(mandatory_field_prefix)        
+                if static_vals.get(field_name):
+                    body[body_field_name] = static_vals.get(field_name)
+                elif search_result.get(field_name):
+                    body[body_field_name] = search_result.get(field_name)
+                else:
+                    # Don't raise an exception if the fields were not provided
+                    err_msg = "Skipping Twilio flow execution. Mandatory field {} not found in search {} (sid:{} rid:{})".format(field_name,flow_parameters["search_name"],flow_parameters["sid"],flow_parameters["rid"])
+                    helper.log_info(err_msg)
+                    helper.addevent(err_msg, sourcetype=arf_msg_sourcetype)
+                    helper.writeevents(index="summary", host="localhost", source="localhost")
+                    continue
+                
+                mandatory_fields_found = mandatory_fields_found + 1 
+
+            if len(mandatory_field_names) != mandatory_fields_found:
+                helper.log_debug("mandatory_fields_found: {} of {}".format(mandatory_fields_found,len(mandatory_field_names)))
+                continue
+
+            ## Send the request to Twilio
             execution = twilio_client.studio.v2.flows(studio_flow_id).executions \
                         .create(to=body["To"], \
                                 from_=body["From"], \
                                 parameters=flow_parameters)
-
-            em = "Message queued for delivery to {}.  Execution {}" \
-                        .format(execution.contact_channel_address,execution.sid)
+            helper.log_debug("200")
+            event_msg = "Message queued for delivery to {}.  Execution {}" \
+                .format(execution.contact_channel_address,execution.sid)
+            helper.log_info(event_msg)
 
         except TwilioRestException as tre:
-            if(tre.status == 409 and tre.details["conflicting_execution_sid"]):    
+            if(tre.status == 409 and tre.details["conflicting_execution_sid"]):
                 # Handle duplicate executions gracefully
-                em = "Existing flow active.  No new flow execution created.  See existing execution {}" \
-                            .format(tre.details["conflicting_execution_sid"])
-                helper.log_info(em)
-                helper.addevent(em, sourcetype=arf_msg_sourcetype)
+                event_msg = "Existing flow active.  No new flow execution created for {}.  See existing execution {}" \
+                    .format(body["To"],tre.details["conflicting_execution_sid"])
+                helper.log_info(event_msg)
+                helper.addevent(event_msg, sourcetype=arf_msg_sourcetype)
             else:
                 # Try to instrument the others a bit better
-                em = "Unexpected REST exception from Twilio.   See index=cim_modactions for additional details."
+                event_msg = "Unexpected REST exception from Twilio.   See index=cim_modactions for additional details."
                 helper.log_error(vars(tre))
-                raise tre
 
-        except:
-            em = "Exception raised by action.   See index=cim_modactions for additional details."
-            raise
-
+        except Exception as e:
+            event_msg = "Exception raised by action.   See index=cim_modactions for additional details."
+            helper.log_error(e)
+            
         finally:
-            helper.addevent(em, sourcetype=arf_msg_sourcetype)
+            helper.addevent(event_msg, sourcetype=arf_msg_sourcetype)
             helper.writeevents(index="summary", host="localhost", source="localhost")
             
     return 0
-
